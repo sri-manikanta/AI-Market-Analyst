@@ -12,7 +12,7 @@ class Ingestor:
     def __init__(self, data_file: str = "../Data/innovate_inc_q3_2025.txt",
                  faiss_dir: str = "../Vectors",
                  embedding_model_name: str = "intfloat/e5-large-v2",
-                 chunk_size: int = 512,
+                 chunk_size: int = 50,
                  chunk_overlap: float = 0.2):
         self.data_file = data_file
         self.faiss_dir = faiss_dir

@@ -1,72 +1,39 @@
-# Tools/Extract.py
+# Extraction tool: retrieval + prompt + LLM call (Ollama)
 from .ingest import Ingestor
-import os
-import requests
-import json
-from pydantic import BaseModel, ValidationError, Field
+from pydantic import BaseModel, Field, ValidationError, conlist
+from langchain_ollama import ChatOllama
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama2")
+#Instantiate the model, specifying the model name
+llm = ChatOllama(model="llama3.2")  # adjust to your local model name
 
 class ExtractionSchema(BaseModel):
-    company_name: str | None = None
-    report_date: str | None = None
-    market_value_usd: str | None = None
-    cagr_percent: str | None = None
-    company_market_share_percent: str | None = None
-    main_competitors: list | None = None
-    SWOT: dict | None = None
+    company_name: str | None = Field(None, description="The official name of the company.")
+    report_date: str | None = Field(None, description="The date the financial report was published (e.g., YYYY-MM-DD or Month Day, Year).")
+    market_value_usd: float | None = Field(None, description="The total market valuation in US Dollars as a float (e.g., 12.34 or 1234000.0). Do not include dollar signs or commas.")
+    cagr_percent: float | None = Field(None, description="The Compound Annual Growth Rate (CAGR) as a percentage float (e.g., 5.2 or 0.15). Do not include the '%' sign.")
+    company_market_share_percent: float | None = Field(None, description="The company's market share as a percentage float. Do not include the '%' sign.")
+    main_competitors: list[str] | None = Field(None, description="A list of the company's main competitors, each as a separate string.")
+    SWOT: dict[str, list[str]] | None = Field(None, description="A dictionary containing 'Strengths', 'Weaknesses', 'Opportunities', and 'Threats' as keys, with lists of strings as values.")
+    
+structured_llm = llm.with_structured_output(schema=ExtractionSchema)
 
 class ExtractTool:
     def __init__(self, ingestor: Ingestor):
         self.ingestor = ingestor
 
-    def extract(self, field_prompt: str, top_k: int = 6) -> dict:
-        chunks = self.ingestor.retrieve(field_prompt, top_k=top_k)
+    def extract(self, prompt: str, top_k: int = 6) -> dict:
+        chunks = self.ingestor.retrieve(query=prompt, top_k=top_k)
         ctx = "\n\n---\n\n".join([f"Source: {c['source']}\n\n{c['text']}" for c in chunks])
         system = (
             "You are a JSON extractor. Extract the requested fields and output ONLY valid JSON according to the schema. "
             "If a field is missing, output null for that field."
         )
-        full_prompt = f"{system}\n\nContext:\n{ctx}\n\nInstructions:\n{field_prompt}\n\nOutput (only JSON):"
-        payload = {"model": OLLAMA_MODEL, "prompt": full_prompt, "max_tokens": 800, "temperature": 0.0}
-        url = f"{OLLAMA_HOST}/api/generate"
+        full_prompt = f"{system}\n\nContext:\n{ctx}\n\nInstructions:\n{prompt}\n\nOutput (only JSON):"
+        response = structured_llm.invoke(full_prompt)
+        print(f"[summ Tool] LLM Response: {response}")
         try:
-            r = requests.post(url, json=payload, timeout=60)
-            r.raise_for_status()
-            data = r.json()
-            raw = ""
-            if "generated" in data:
-                raw = data["generated"]
-            elif "choices" in data and data["choices"]:
-                raw = data["choices"][0].get("message", {}).get("content", "")
-            else:
-                raw = json.dumps(data)
-            # Try to parse JSON from raw text
-            parsed = self._extract_json_from_text(raw)
-            if parsed is None:
-                return {"error": "Failed to parse JSON", "raw": raw}
-            # Validate schema
-            try:
-                validated = ExtractionSchema(**parsed).dict()
-                return validated
-            except ValidationError as ve:
-                return {"error": "Schema validation failed", "details": ve.errors(), "raw_parsed": parsed}
-        except Exception as e:
-            return {"error": f"Ollama call failed: {e}"}
-
-    def _extract_json_from_text(self, text: str):
-        # crude attempt: find first '{' and last '}' and parse
-        try:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start == -1 or end == -1 or end < start:
-                return None
-            jtxt = text[start:end+1]
-            return json.loads(jtxt)
-        except Exception:
-            # fallback: try to parse lines that look JSON-ish
-            try:
-                return json.loads(text)
-            except Exception:
-                return None
+            extraction = ExtractionSchema.model_validate(response)
+            return extraction.model_dump()
+        except ValidationError as ve:
+            print(f"[Extract Tool] Validation Error: {ve}")
+            return {"error": "Failed to parse extraction result."}

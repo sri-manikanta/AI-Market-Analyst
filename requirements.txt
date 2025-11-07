@@ -1,2 +1,11 @@
 google-adk
+uvicorn
+fastapi
+pydantic
+langchain_ollama
+gradio
+requests
+sentence_transformers
+faiss-cpu
+tqdm
 # Add any other dependencies your project needs below

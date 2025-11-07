@@ -1,119 +1,99 @@
-import os
-import asyncio
-from typing import Dict, Any, List
-
-# --- ADK Imports ---
 from google.adk.agents import Agent
-from google.adk.tools import FunctionTool
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+import logging
 from google.adk.models.lite_llm import LiteLlm
-#from google.adk.models.google_genai import GoogleGenAI
 from pydantic import BaseModel, Field
+from google.adk.tools import FunctionTool
+import os
 
-# --- Custom Tool Imports (Assume they are in a local path) ---
-# NOTE: Replace these with your actual tool/model imports if they're not ADK-ready
 from .Tools.qa import QuestionAnswerTool
 from .Tools.summarize import SummarizeTool
 from .Tools.extract import ExtractTool
 from .Tools.ingest import Ingestor # Your data ingestion class
 
-# --- Configuration ---
-# Use an environment variable for the Gemini API Key
-# os.environ["GOOGLE_API_KEY"] = "YOUR_GEMINI_API_KEY"
-ADK_MODEL = LiteLlm(model="ollama/llama3.2")
 
-## --- Pydantic Schemas for Tools ---
-# Define the structured input for each tool, which is an ADK requirement for FunctionTool
+# Configure logging for better visibility 
+logging.basicConfig(level=logging.INFO)
 
-class QAToolInput(BaseModel):
-    """Input for answering a question against the market knowledge base."""
-    question: str = Field(description="The specific question to be answered from the documents.")
-    top_k: int = Field(default=4, description="The number of top results to retrieve from the index.")
+# Config from env
+DATA_FILE = os.environ.get("DATA_FILE", "Agent/Data/innovate_inc_q3_2025.txt")
+FAISS_DIR = os.environ.get("FAISS_DIR", "Agent/Vectors")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/e5-large-v2")
 
-class SummarizeToolInput(BaseModel):
-    """Input for summarizing relevant market documents."""
-    prompt: str = Field(description="A prompt guiding the summary content, e.g., 'recent trends'.")
-    top_k: int = Field(default=6, description="The number of top documents to summarize.")
+#llm2 = LiteLlm(model="ollama/qwen3:4b")  # adjust to your local model name 
+llm = "gemini-2.5-flash" # configure API key in env var GOOGLE_API_KEY 
 
-class ExtractToolInput(BaseModel):
-    """Input for structured extraction from market documents."""
-    field_prompt: str = Field(description="A prompt describing the fields to extract, e.g., 'stock ticker and Q3 revenue'.")
-    top_k: int = Field(default=6, description="The number of top documents to use for extraction.")
+# Initialize ingestion (loads or creates FAISS index)
+ingestor = Ingestor(data_file=DATA_FILE, faiss_dir=FAISS_DIR, embedding_model_name=EMBEDDING_MODEL)
+ingestor.ensure_index()
+
+# Instantiate core logic tools (these are NOT the ADK tool wrappers yet)
+qa_logic = QuestionAnswerTool(ingestor)
+summarize_logic = SummarizeTool(ingestor)
+extract_logic = ExtractTool(ingestor)
 
 
-class MarketAgent:
-    def __init__(self, ingestor: Ingestor):
-        self.ingestor = ingestor
+#Define the ADK Tool Functions (wrappers around the core logic)
+def tool_qa_fn(prompt: str, top_k: int) -> str:
+    """Answers a question using the internal market document knowledge base."""
+    return qa_logic.answer(prompt=prompt, top_k=top_k)
 
-        # Instantiate core logic tools (these are NOT the ADK tool wrappers yet)
-        self.qa_logic = QuestionAnswerTool(ingestor)
-        self.summarize_logic = SummarizeTool(ingestor)
-        self.extract_logic = ExtractTool(ingestor)
+def tool_summarize_fn(prompt:str, top_k: int) -> str:
+    """Generates a summary based on relevant market documents."""
+    return summarize_logic.summarize(prompt=prompt, top_k=top_k)
 
-        # 1. Define the ADK Tool Functions (wrappers around the core logic)
-        def tool_qa_fn(input: QAToolInput) -> str:
-            """Answers a question using the internal market document knowledge base."""
-            return self.qa_logic.answer(question=input.question, top_k=input.top_k)
+def tool_extract_fn(prompt:str, top_k: int) -> str:
+    """Extracts structured data from market documents based on a prompt."""
+    # Return as a string or a JSON-formatted string, as the Agent expects a string result
+    result = extract_logic.extract(prompt=prompt, top_k=top_k)
+    return str(result)
+# Create the ADK FunctionTool objects
+qa_tool = FunctionTool(
+    func=tool_qa_fn
+)
+summarize_tool = FunctionTool(
+    func=tool_summarize_fn
+)
+extract_tool = FunctionTool(
+    func=tool_extract_fn
+)
 
-        def tool_summarize_fn(input: SummarizeToolInput) -> str:
-            """Generates a summary based on relevant market documents."""
-            return self.summarize_logic.summarize(prompt=input.prompt, top_k=input.top_k)
 
-        def tool_extract_fn(input: ExtractToolInput) -> str:
-            """Extracts structured data from market documents based on a prompt."""
-            # Return as a string or a JSON-formatted string, as the Agent expects a string result
-            result = self.extract_logic.extract(field_prompt=input.field_prompt, top_k=input.top_k)
-            return str(result)
+market_analyst_agent = Agent(
+    name="market_analyst_agent",
+    model= llm,
+    tools=[qa_tool, summarize_tool, extract_tool],
+    instruction="""
+            "You are the **AI Market Analyst agent**. Your sole function is to provide accurate, data-backed responses to market inquiries based **EXCLUSIVELY** on the information retrieved from your three tools.
 
-        # 2. Create the ADK FunctionTool objects
-        self.qa_tool = FunctionTool(
-            func=tool_qa_fn
-        )
-        self.summarize_tool = FunctionTool(
-            func=tool_summarize_fn
-        )
-        self.extract_tool = FunctionTool(
-            func=tool_extract_fn
-        )
-        self.tools = {
-            "summarize": self.summarize_logic,
-            "qa": self.qa_logic,
-            "extract": self.extract_logic,
-        }
+            **STRICT TOOL USAGE RULES & PARAMETER MAPPING:**
+            1.  **Mandatory Tool Use:** You **MUST** use one of the provided tools for **EVERY** request.
+            2.  **Tool Routing and Parameter Generation Strategy:** The user's request must be translated into the exact input parameters for the chosen tool.
 
-        # 3. Create the ADK Agent (using the standard Agent class)
-        self.agent = Agent(
-            name="ai_market_analyst",
-            model=ADK_MODEL,
-            instruction=(
-                "You are the **AI Market Analyst agent**. Your role is to provide data-backed "
-                "responses for market inquiries. You **MUST** use the provided tools to answer "
-                "any questions about market reports or internal documents. Always cite which tool was used."
-            ),
-            # Pass the FunctionTool objects
-            tools=[self.qa_tool, self.summarize_tool, self.extract_tool]
-        )
+                * **A. For Factual Q&A (`qa_tool`):**
+                    * **User Intent:** Seeking a specific, concise fact or number.
+                    * **Parameter 1:** `prompt` (Type: Direct query, e.g., "What was the year-over-year growth rate for Q4?")
+                    * **Parameter 2:** `top_k` (Value: Low, typically **2** or **3**, for high-precision retrieval of the answer.)
+                    * **Required Call:** `qa_tool(prompt=..., top_k=...)`
 
-        # 4. Initialize Runner & session service
-        self.runner = Runner(app_name="market_analyst_app",
-            agent=self.agent,
-            session_service=InMemorySessionService())
+                * **B. For Summarization (`summarize_tool`):**
+                    * **User Intent:** Asking for an overview, summary, or main takeaways of a document/topic.
+                    * **Parameter 1:** `prompt` (Type: Instruction to summarize, e.g., "Provide a summary of the 2024 Strategic Planning document.")
+                    * **Parameter 2:** `top_k` (Value: Moderate, typically **5** or **6**, to ensure enough context for a comprehensive summary.)
+                    * **Required Call:** `summarize_tool(prompt=..., top_k=...)`
 
-    async def run_conversational_async(self, user_id: str, query: str) -> str:
-        """
-        Runs a query and returns the final response string.
-        Uses ADK's modern async_stream_query method.
-        """
-        final_response = ""
-        # The user_id is used to manage conversation state/memory
-        async for event in self.runner.async_stream_query(
-            agent=self.agent,
-            user_id=user_id,
-            message=query,
-        ):
-            if event.type == "final_answer":
-                final_response = event.data.text
-                break
-            # You can add logic here to print tool_call/tool_result events for debugging
-        return final_response
+                * **C. For Data Extraction (`extract_tool`):**
+                    * **User Intent:** Requesting specific, structured data points, lists, or structured outputs.
+                    * **Parameter 1:** `prompt` (Type: Specific extraction instruction, e.g., "Extract the names, titles, and department of all members of the Risk Committee.")
+                    * **Parameter 2:** `top_k` (Value: Moderate, typically **4** or **5**, to gather all fragments of data needed for the structured output.)
+                    * **Required Call:** `extract_tool(prompt=..., top_k=...)`
+
+            3.  **Final Output Format:** After receiving the tool's output, formulate a polite and professional response. **You MUST cite the tool and the main parameter used** in the final answer (e.g., "The `qa_tool` with `question='...'` reported that..." or "The data extracted by `extract_tool` using `field_prompt='...'` is as follows...").
+            """,
+    description="""
+        "Experienced market analyst agent. Its primary function is to query market reports and internal documents using its three specialized tools (`qa_tool`, `summarize_tool`, `extract_tool`). This agent is highly proficient at translating a user's request into the **exact required tool parameters** (`prompt` along with `top_k`). **Crucially, this agent is constrained to only provide answers based on the output of these tools** and must cite the tool used." 
+        """,
+    output_key="response"
+)
+
+# For ADK tools compatibility, the root agent must be named `root_agent`
+root_agent = market_analyst_agent

@@ -1,28 +1,46 @@
-# Gradio.py
 # Simple Gradio UI to interact with the API and agent locally
 import gradio as gr
 import requests
 import os
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
+#create session
+session = requests.post(f"{API_BASE}/apps/{"Agent"}/users/{"mani001"}/sessions")
+SESSION_ID = session.json()['id']
+print(f"Session Creation Response: {SESSION_ID}")
 
-def call_agent(query):
-    r = requests.post(f"{API_BASE}/agent", json={"query": query})
-    return r.json()
+def call_agent(prompt):
+    r = requests.post(f"{API_BASE}/run", json={
+                        "app_name": "Agent",
+                        "user_id": "mani001",
+                        "session_id": SESSION_ID,
+                        "new_message": {
+                            "role": "user",
+                            "parts": [
+                            {
+                                "text": prompt
+                            }
+                            ]
+                        },
+                        "streaming": "false"
+                        })
+    print(f"API Call Status Code: {r.json()[2]}")
+    print(f"API Call Response Text: {r.json()}")
+    return r.json()[2]['actions']['state_delta']['response']
 
 def call_qa(q):
-    r = requests.post(f"{API_BASE}/qa", json={"question": q})
-    return r.json()
+    r = requests.post(f"{API_BASE}/tools/qa", json={"prompt": q})
+    return r.json()['answer']
 
 def call_summarize(q):
-    r = requests.post(f"{API_BASE}/summarize", json={"prompt": q})
+    r = requests.post(f"{API_BASE}/tools/summarize", json={"prompt": q})
     print(f"API Call Status Code: {r.status_code}")
     print(f"API Call Response Text: {r.text}")
-    return r.json()
+    return r.json()['summary']
 
 def call_extract(q):
-    r = requests.post(f"{API_BASE}/extract", json={"field_prompt": q})
-    return r.json()
+    r = requests.post(f"{API_BASE}/tools/extract", json={"prompt": q})
+    return r.json()['extraction']
 
 with gr.Blocks(title="AI Market Analyst") as demo:
     gr.Markdown("# AI Market Analyst\nInteract with the tools or the conversational agent.")
