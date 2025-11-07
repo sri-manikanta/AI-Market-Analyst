@@ -23,7 +23,7 @@ Ensure you have the following installed on your system:
 - **Python 3.8+**
 - **pip** (Python package manager)
 - **Google API Key** (for Gemini models) - set as environment variable `GOOGLE_API_KEY`
-- **Optional:** Ollama (if using local LLM models)
+- **Ollama**  used for local llm models(as we planned for local development and remote deployment)
 
 ### Step 1: Clone & Navigate to Project
 
