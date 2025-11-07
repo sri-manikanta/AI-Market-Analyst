@@ -586,6 +586,7 @@ The agent automatically selects the appropriate tool(s) and returns synthesized 
 ├── main.py                         # FastAPI server definition
 ├── gradio_app.py                  # Optional Gradio UI
 ├── requirements.txt               # Python dependencies
+├── Dockerfile                     # Dockerfile
 └── README.md                       # This file
 ```
 
