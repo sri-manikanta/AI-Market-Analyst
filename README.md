@@ -648,14 +648,6 @@ pip install faiss-gpu
 
 ---
 
-## Performance Considerations
-
-- **Indexing Time:** ~2-5 minutes for a 50,000-word document
-- **Query Latency:** 50-200ms (retrieval) + 1-5 seconds (LLM inference)
-- **Memory Footprint:** ~2GB for embedding model + 500MB for typical FAISS index
-
----
-
 ## License & Attribution
 
 This project leverages:
